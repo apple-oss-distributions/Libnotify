@@ -1,10 +1,8 @@
 /*
- * Copyright (c) 2003-2009 Apple Inc. All rights reserved.
+ * Copyright (c) 2009-2010 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * Portions Copyright (c) 2003-2009 Apple Inc.  All Rights Reserved.
- *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
@@ -23,10 +21,19 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#ifndef _NOTIFY_IPC_TYPES_H_
-#define _NOTIFY_IPC_TYPES_H_
+#ifndef __NOTIFY_PRIVATE_H__
+#define __NOTIFY_PRIVATE_H__
 
-#include <sys/types.h>
-typedef char inline_data_t[2048];
+#include <stdint.h>
+#include <Availability.h>
 
-#endif
+uint32_t notify_suspend_pid(pid_t pid)
+__OSX_AVAILABLE_STARTING(__MAC_10_7,__IPHONE_4_0);
+
+uint32_t notify_resume_pid(pid_t pid)
+__OSX_AVAILABLE_STARTING(__MAC_10_7,__IPHONE_4_0);
+
+uint32_t notify_simple_post(const char *name)
+__OSX_AVAILABLE_STARTING(__MAC_10_7,__IPHONE_4_3);
+
+#endif /* __NOTIFY_PRIVATE_H__ */
