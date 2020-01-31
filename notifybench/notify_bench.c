@@ -7,7 +7,8 @@
 #include <mach/mach_time.h>
 #include <assert.h>
 
-extern uint32_t notify_register_plain(const char *name, int *out_token);
+#include "notify_private.h"
+
 #ifdef NO_OP_TESTS
 extern uint32_t notify_no_op_str_sync(const char *name, size_t len);
 extern uint32_t notify_no_op_str_async(const char *name, size_t len);
@@ -25,14 +26,22 @@ extern uint32_t notify_no_op_int_async(int n);
 #define DEFAULT_SPL 1001
 #endif
 
-uint32_t cnt = DEFAULT_CNT;
-uint32_t spl = DEFAULT_SPL;
+static uint32_t cnt = DEFAULT_CNT;
+static uint32_t spl = DEFAULT_SPL;
+
+static long double time_round_to = (long double)200.0;
 
 static long double loop_cost;
 static mach_timebase_info_data_t tbi;
 static uint64_t dmy[MAX_SPL], reg_plain[MAX_SPL], cancel_plain[MAX_SPL], reg_port[MAX_SPL], cancel_port[MAX_SPL];
 static uint64_t post_plain1[MAX_SPL], post_plain2[MAX_SPL], post_plain3[MAX_SPL];
-static uint64_t post_port[MAX_SPL], set_state1[MAX_SPL], set_state2[MAX_SPL], get_state[MAX_SPL];
+static uint64_t set_state1[MAX_SPL], set_state2[MAX_SPL], get_state[MAX_SPL];
+static uint64_t reg_check[MAX_SPL], cancel_check[MAX_SPL];
+static uint64_t check1[MAX_SPL], check2[MAX_SPL], check3[MAX_SPL], check4[MAX_SPL], check5[MAX_SPL];
+static uint64_t reg_disp1[MAX_SPL], reg_disp2[MAX_SPL], cancel_disp[MAX_SPL];
+
+volatile static int dispatch_changer = 0;
+
 #ifdef NO_OP_TESTS
 static uint64_t nss[MAX_SPL], nsa[MAX_SPL], nis[MAX_SPL], nia[MAX_SPL];
 #endif
@@ -81,18 +90,26 @@ print_result(uint64_t *s, const char *str)
 	}
 
 	dd /= NSEC_PER_USEC;
-	dd = roundl(dd * 200.0)/200.0;
+	dd = roundl(dd * time_round_to) / time_round_to;
 	mm /= NSEC_PER_USEC;
-	mm = roundl(mm * 200.0)/200.0;
+	mm = roundl(mm * time_round_to) / time_round_to;
 	sd /= NSEC_PER_USEC;
-	sd = roundl(sd * 200.0)/200.0;
+	sd = roundl(sd * time_round_to) / time_round_to;
 
 	if (!str) {
-		printf("%-28s %-8s    %-8s    %-8s\n",
+		printf("%-40s %-8s    %-8s    %-8s\n",
 				"Symbol", "Median", "Average", "StdDev");
 	}
-	printf("%-28s%8.3Lf us %8.3Lf us %8.3Lf us\n",
+	printf("%-36s%8.3Lf us %8.3Lf us %8.3Lf us\n",
 			str ? str : "Empty loop:", mm, dd, sd);
+}
+
+static void
+notify_fence()
+{
+	int fence_token;
+	notify_register_check("com.apple.notify.test", &fence_token);
+	notify_cancel(fence_token);
 }
 
 int
@@ -112,10 +129,16 @@ main(int argc, char *argv[])
 	assert(r == 0);
 
 	int t[MAX_CNT];
+	int t_2[MAX_CNT];
 	mach_port_t p[MAX_CNT];
 	char *n[MAX_CNT];
 	size_t l[MAX_CNT];
 	uint64_t s;
+	int check;
+
+	volatile uint32_t spin = 0;
+
+	dispatch_queue_t disp_q = dispatch_queue_create("Notify.Test", NULL);
 
 	for (i = 1; i < argc; i++)
 	{
@@ -141,15 +164,7 @@ main(int argc, char *argv[])
 		s = mach_absolute_time();
 		for (i = 0; i < cnt; i++)
 		{
-#if defined(__arm__)
-			asm volatile("movs %0, #0 @ %1" : "=r" (r) : "m" (n[i]) );
-#elif defined(__x86_64)
-			asm volatile("movl $0, %0 # %1" : "=r" (r) : "m" (n[i]) );
-#else
-			asm volatile("" : : "m" (n[i]) );
-			r = 0;
-#endif
-			assert(r == 0);
+			spin++;
 		}
 		dmy[j] = mach_absolute_time() - s;
 
@@ -186,6 +201,10 @@ main(int argc, char *argv[])
 		}
 		nia[j] = mach_absolute_time() - s;
 #endif
+
+
+		
+
 
 		/* Register Plain */
 		s = mach_absolute_time();
@@ -241,26 +260,7 @@ main(int argc, char *argv[])
 		}
 		reg_port[j] = mach_absolute_time() - s;
 
-#ifdef NOTDEF
-		/* Post */
-		s = mach_absolute_time();
-		for (i = 0; i < cnt; i++)
-		{
-			r = notify_post(n[i]);
-			assert(r == 0);
-		}
-		post_port[j] = mach_absolute_time() - s;
-		for (i = 0; i < cnt; i++)
-		{
-			mach_msg_empty_rcv_t msg = { .header = {
-				.msgh_size = sizeof(mach_msg_empty_rcv_t),
-				.msgh_local_port = p[i],
-			}};
-			kr = mach_msg_receive(&msg.header);
-			assert(kr == 0);
-			mach_msg_destroy(&msg.header);
-		}
-#endif
+
 		/* Set State 1 */
 		s = mach_absolute_time();
 		for (i = 0; i < cnt; i++)
@@ -298,12 +298,121 @@ main(int argc, char *argv[])
 		}
 		cancel_port[j] = mach_absolute_time() - s;
 
+
+
+		/* Register Check */
+		s = mach_absolute_time();
+		for (i = 0; i < cnt; i++)
+		{
+			r = notify_register_check("com.apple.notify.test.check", &t[i]);
+			assert(r == 0);
+		}
+		reg_check[j] = mach_absolute_time() - s;
+
+		/* Check 1 */
+		s = mach_absolute_time();
+		for (i = 0; i < cnt; i++)
+		{
+			r = notify_check(t[i], &check);
+			assert(r == 0);
+			assert(check == 1);
+		}
+		check1[j] = mach_absolute_time() - s;
+
+		/* Check 2 */
+		s = mach_absolute_time();
+		for (i = 0; i < cnt; i++)
+		{
+			r = notify_check(t[i], &check);
+			assert(r == 0);
+			assert(check == 0);
+		}
+		check2[j] = mach_absolute_time() - s;
+
+		/* Check 3 */
+		s = mach_absolute_time();
+		for (i = 0; i < cnt; i++)
+		{
+			r = notify_check(t[i], &check);
+			assert(r == 0);
+			assert(check == 0);
+		}
+		check3[j] = mach_absolute_time() - s;
+
+		notify_post("com.apple.notify.test.check");
+
+		notify_fence();
+
+		/* Check 4 */
+		s = mach_absolute_time();
+		for (i = 0; i < cnt; i++)
+		{
+			r = notify_check(t[i], &check);
+			assert(r == 0);
+			assert(check == 1);
+		}
+		check4[j] = mach_absolute_time() - s;
+
+		/* Check 5 */
+		s = mach_absolute_time();
+		for (i = 0; i < cnt; i++)
+		{
+			r = notify_check(t[i], &check);
+			assert(r == 0);
+			assert(check == 0);
+		}
+		check5[j] = mach_absolute_time() - s;
+
+		/* Cancel Check */
+		s = mach_absolute_time();
+		for (i = 0; i < cnt; i++)
+		{
+			r = notify_cancel(t[i]);
+			assert(r == 0);
+		}
+		cancel_check[j] = mach_absolute_time() - s;
+
+		/* Register Dispatch 1 */
+		s = mach_absolute_time();
+		for (i = 0; i < cnt; i++)
+		{
+			r = notify_register_dispatch(n[i], &t[i], disp_q, ^(int x){
+				dispatch_changer = x;
+			});
+			assert(r == 0);
+		}
+		reg_disp1[j] = mach_absolute_time() - s;
+
+		/* Register Dispatch 2 (Coalesced) */
+		s = mach_absolute_time();
+		for (i = 0; i < cnt; i++)
+		{
+			r = notify_register_dispatch(n[i], &t_2[i], disp_q, ^(int x){
+				dispatch_changer = x;
+
+			});
+			assert(r == 0);
+		}
+		reg_disp2[j] = mach_absolute_time() - s;
+
+		/* Cancel Dispatch */
+		s = mach_absolute_time();
+		for (i = 0; i < cnt; i++)
+		{
+			r = notify_cancel(t[i]);
+			assert(r == 0);
+			r = notify_cancel(t_2[i]);
+			assert(r == 0);
+		}
+		cancel_disp[j] = mach_absolute_time() - s;
+
 		for (i = 0; i < cnt; i++)
 		{
 			free(n[i]);
 			kr = mach_port_mod_refs(mach_task_self(), p[i], MACH_PORT_RIGHT_RECEIVE, -1);
 			assert(kr == 0);
 		}
+
 	}
 
 	print_result(dmy, NULL);
@@ -313,6 +422,8 @@ main(int argc, char *argv[])
 	print_result(nis,  "notify_no_op_int_sync:");
 	print_result(nia,  "notify_no_op_int_async:");
 #endif
+
+
 	print_result(reg_plain, "notify_register_plain:");
 	print_result(post_plain1,  "notify_post [plain 1]:");
 	print_result(post_plain2,  "notify_post [plain 2]:");
@@ -323,6 +434,18 @@ main(int argc, char *argv[])
 	print_result(set_state2,  "notify_set_state [2]:");
 	print_result(get_state,  "notify_get_state:");
 	print_result(cancel_port,  "notify_cancel [port]");
+
+	print_result(reg_check, "notify_register_check:");
+	print_result(check1, "notify_check [1]:");
+	print_result(check2, "notify_check [2]:");
+	print_result(check3, "notify_check [3]:");
+	print_result(check4, "notify_check [4]:");
+	print_result(check5, "notify_check [5]:");
+	print_result(cancel_check, "notfiy_cancel [check]:");
+
+	print_result(reg_disp1, "notify_register_dispatch [1]:");
+	print_result(reg_disp2, "notify_register_dispatch [2]:");
+	print_result(cancel_disp, "notify_cancel [both disp]:");
 
 	return 0;
 }

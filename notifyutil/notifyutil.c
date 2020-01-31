@@ -33,6 +33,7 @@
 #include <notify_private.h>
 #include <signal.h>
 #include <dispatch/dispatch.h>
+#include <os/variant_private.h>
 
 #define forever for(;;)
 #define IndexNull ((uint32_t)-1)
@@ -68,8 +69,6 @@ static const char *typename[] =
 	"plain"
 };
 
-extern uint32_t notify_register_plain(const char *name, int *out_token);
-
 typedef struct
 {
 	uint32_t token;
@@ -87,11 +86,11 @@ static int port_flag;
 static int file_flag;
 static int watch_file;
 static mach_port_t watch_port;
-dispatch_source_t timer_src;
-dispatch_source_t port_src;
-dispatch_source_t file_src;
-dispatch_source_t sig_src[__DARWIN_NSIG];
-dispatch_queue_t watch_queue;
+static dispatch_source_t timer_src;
+static dispatch_source_t port_src;
+static dispatch_source_t file_src;
+static dispatch_source_t sig_src[__DARWIN_NSIG];
+static dispatch_queue_t watch_queue;
 
 static void
 usage(const char *name)
@@ -109,29 +108,33 @@ usage(const char *name)
 	fprintf(stderr, "    -signal [#]    switch to signal [#] for subsequent registrations\n");
 	fprintf(stderr, "                   initial default for signal is 1 (SIGHUP)\n");
 	fprintf(stderr, "    -dispatch      switch to dispatch for subsequent registrations\n");
-	fprintf(stderr, "    -p key         post a notifcation for key\n");
+	fprintf(stderr, "    -p key         post a notification for key\n");
 	fprintf(stderr, "    -w key         register for key and report notifications\n");
 	fprintf(stderr, "    -# key         (# is an integer value, eg \"-1\") register for key and report # notifications\n");
 	fprintf(stderr, "    -g key         get state value for key\n");
 	fprintf(stderr, "    -s key val     set state value for key\n");
+
+	if(os_variant_has_internal_diagnostics(NULL))
+	{
+		fprintf(stderr, "    --dump         dumps metadata to a file in /var/run/\n");
+	}
 }
 
-static const char *
-notify_status_strerror(int status)
+// Triggers a notifyd dump
+static void
+notifyutil_dump()
 {
-	switch (status)
+	int ret;
+
+	ret = notify_dump_status("/var/run/notifyd.status");
+
+	if(ret == NOTIFY_STATUS_OK)
 	{
-		case NOTIFY_STATUS_OK: return("OK");
-		case NOTIFY_STATUS_INVALID_NAME: return "Invalid Name";
-		case NOTIFY_STATUS_INVALID_TOKEN: return "Invalid Token";
-		case NOTIFY_STATUS_INVALID_PORT: return "Invalid Port";
-		case NOTIFY_STATUS_INVALID_FILE: return "Invalid File";
-		case NOTIFY_STATUS_INVALID_SIGNAL: return "Invalid Signal";
-		case NOTIFY_STATUS_INVALID_REQUEST: return "Invalid Request";
-		case NOTIFY_STATUS_NOT_AUTHORIZED: return "Not Authorized";
-		case NOTIFY_STATUS_FAILED:
-		default: return "Failed";
+		fprintf(stdout, "Notifyd dump success! New file created at /var/run/notifyd.status\n");
+	} else {
+		fprintf(stdout, "Notifyd dump failed with %x\n", ret);
 	}
+
 }
 
 static void
@@ -244,7 +247,7 @@ process_event(int tid)
 		state = 0;
 		status = notify_get_state(tid, &state);
 		if (status == NOTIFY_STATUS_OK) printf("%llu",(unsigned long long)state);
-		else printf(": %s", notify_status_strerror(status));
+		else printf(": Failed with code %d", status);
 		needspace = 1;
 	}
 
@@ -622,6 +625,12 @@ main(int argc, const char *argv[])
 				fprintf(stderr, "value following -s name must be a 64-bit integer\n");
 			}
 		}
+		else if (!strcmp(argv[i], "--dump") && os_variant_has_internal_diagnostics(NULL))
+		{
+			notifyutil_dump();
+			exit(0);
+
+		}
 		else
 		{
 			fprintf(stderr, "unrecognized option: %s\n", argv[i]);
@@ -675,7 +684,7 @@ main(int argc, const char *argv[])
 			i++;
 
 			status = notify_post(argv[i]);
-			if (status != NOTIFY_STATUS_OK) printf("%s: %s\n", argv[i], notify_status_strerror(status));
+			if (status != NOTIFY_STATUS_OK) printf("%s: Failed with code %d\n", argv[i], status);
 			else if (nap > 0) usleep(nap);
 		}
 		else if ((argv[i][0] == '-') && ((argv[i][1] == 'w') || ((argv[i][1] >= '0') && (argv[i][1] <= '9'))))
@@ -693,7 +702,7 @@ main(int argc, const char *argv[])
 			tid = IndexNull;
 
 			status = do_register(argv[i], ntype, signum, n);
-			if (status != NOTIFY_STATUS_OK) printf("%s: %s\n", argv[i], notify_status_strerror(status));
+			if (status != NOTIFY_STATUS_OK) printf("%s: Failed with code %d\n", argv[i], status);
 		}
 		else if (!strcmp(argv[i], "-g"))
 		{
@@ -715,7 +724,7 @@ main(int argc, const char *argv[])
 			}
 
 			if (status == NOTIFY_STATUS_OK) printf("%s %llu\n", argv[i], (unsigned long long)state);
-			else printf("%s: %s\n", argv[i], notify_status_strerror(status));
+			else printf("%s: Failed with code %d\n", argv[i], status);
 		}
 		else if (!strcmp(argv[i], "-s"))
 		{
@@ -735,7 +744,7 @@ main(int argc, const char *argv[])
 				notify_cancel(tid);
 			}
 
-			if (status != NOTIFY_STATUS_OK)  printf("%s: %s\n", argv[i], notify_status_strerror(status));
+			if (status != NOTIFY_STATUS_OK)  printf("%s: Failed with code %d\n", argv[i], status);
 			i++;
 		}
 	}
